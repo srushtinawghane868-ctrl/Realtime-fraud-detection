@@ -1,226 +1,595 @@
-# Real-Time AI Streaming: Fraud Detection Pipeline
+# Real-Time AI Streaming: Fraud Detection
 
-A production-grade, local streaming architecture for real-time credit card and banking transaction fraud detection. This project demonstrates high-throughput event ingestion via **Apache Kafka**, distributed stream processing with **Apache Spark Structured Streaming (PySpark)**, and unsupervised machine-learning anomaly detection using **scikit-learn's Isolation Forest**.
+A real-time transaction anomaly-detection pipeline built with **Apache Kafka**, **Apache Spark Structured Streaming**, and a pre-trained **Isolation Forest** model from Scikit-learn.
+
+The project demonstrates how transaction events can be generated, streamed through Kafka, processed in Spark micro-batches, scored by a machine-learning model, and written to a CSV output file for further review.
+
+> **Project status:** End-to-end demo executed successfully. In the verified run, the producer published 20 transactions, Spark processed all 20 in 4 micro-batches, 9 transactions were flagged as anomalies, and all 6 automated tests passed.
+>
+> **Important:** This is an educational demonstration using synthetic transaction data. An anomaly is a potential risk signal, not proof of fraud. The model has not been validated for production banking use.
 
 ---
 
-## 1. System Architecture
+## Table of Contents
 
-The end-to-end pipeline ingests live financial events, processes micro-batches with Spark, scores behavioral anomalies using a pre-trained ML model, prints real-time alerts to the console, and persistently stores suspicious transactions for human review.
+- [1. Project Overview](#1-project-overview)
+- [2. Architecture and Workflow](#2-architecture-and-workflow)
+- [3. Technology Stack](#3-technology-stack)
+- [4. Project Structure](#4-project-structure)
+- [5. How the Detection Works](#5-how-the-detection-works)
+- [6. Prerequisites](#6-prerequisites)
+- [7. Installation and Setup](#7-installation-and-setup)
+- [8. Run the Project](#8-run-the-project)
+- [9. View the Results](#9-view-the-results)
+- [10. Run Automated Tests](#10-run-automated-tests)
+- [11. Example Execution Results](#11-example-execution-results)
+- [12. Configuration](#12-configuration)
+- [13. Troubleshooting](#13-troubleshooting)
+- [14. Limitations and Responsible Use](#14-limitations-and-responsible-use)
+- [15. Future Improvements](#15-future-improvements)
+- [16. Author](#16-author)
 
-```mermaid
-flowchart LR
-    A["Live Event Producer\n(transaction_producer.py)"] -->|"JSON Over TCP\n(Port 9092)"| B[("Apache Kafka\nTopic: 'transactions'")]
-    B -->|"Spark Structured Streaming\nKafka Source"| C["PySpark Streaming Engine\n(spark_consumer.py)"]
-    D[("Trained Model\nmodels/*.joblib")] -.->|"Batch Load\n(Scaler + Isolation Forest)"| C
-    C -->|"Live Terminal Dashboard\nScores & Risk Labels"| E["Console Monitor\n[NORMAL | SUSPICIOUS | HIGH_RISK]"]
-    C -->|"Append Anomaly Rows"| F[("Flagged Storage\noutput/flagged_transactions.csv")]
+---
+
+## 1. Project Overview
+
+Financial systems process many transactions every second. Reviewing every transaction manually is difficult, so automated systems can help identify unusual transaction patterns for further investigation.
+
+This project implements a small real-time streaming pipeline:
+
+1. A Python producer generates synthetic financial transactions.
+2. The producer sends each transaction as a JSON message to an Apache Kafka topic.
+3. Spark Structured Streaming reads the messages from Kafka.
+4. A pre-trained Isolation Forest model scores each transaction.
+5. The system assigns a risk category and saves flagged records to a CSV file.
+
+The goal is to demonstrate the integration of streaming infrastructure and machine learning inference in one end-to-end workflow.
+
+## 2. Architecture and Workflow
+
+```text
+Synthetic Transaction Generator
+            |
+            | JSON events
+            v
+      Apache Kafka
+      Topic: transactions
+            |
+            | Kafka Spark Connector
+            v
+ Spark Structured Streaming
+       (micro-batches)
+            |
+            v
+   Feature Preparation
+            |
+            v
+ Pre-trained Isolation Forest
+            |
+            v
+  Anomaly / Risk Classification
+            |
+       +----+----+
+       |         |
+       v         v
+ Console Output  CSV Persistence
+                 output/flagged_transactions.csv
 ```
 
-### Event Lifecycle & Pipeline Stages
-1. **Event Simulation & Production (`transaction_producer.py`)**:
-   Generates synthetic JSON transaction events with realistic amounts, geographical distances, transaction velocity frequencies, and merchant categories. Publishes each event to the Kafka topic `transactions` keyed by `customer_id`.
-2. **Message Broker (`Apache Kafka / KRaft`)**:
-   A single-node Kafka broker operating in modern KRaft mode (no Zookeeper required) acting as an event buffer.
-3. **Structured Streaming Engine (`spark_consumer.py`)**:
-   PySpark subscribes to the Kafka topic, parses the JSON payload into structured DataFrames with explicit data types, and triggers micro-batches every 2 seconds.
-4. **ML Inference (`models/fraud_detection_pipeline.joblib`)**:
-   Applies standardized preprocessing (`StandardScaler`) and runs scikit-learn's `IsolationForest` decision function. Computes an anomaly score, flags outliers (`-1` vs `+1`), and classifies records into risk tiers:
-   - `NORMAL`: Standard behavioral pattern
-   - `SUSPICIOUS`: Mild statistical deviation or borderline anomaly
-   - `HIGH_RISK`: Extreme outlier (high dollar value, velocity burst, or impossible geographic displacement)
-5. **Real-Time Display & Persistence**:
-   Outputs a color-coded batch summary table to the terminal and automatically appends flagged records (`SUSPICIOUS` and `HIGH_RISK`) to `output/flagged_transactions.csv`.
+### Main components
 
----
+| Component | Responsibility |
+|---|---|
+| `train_model.py` | Creates synthetic training data, trains the Isolation Forest pipeline, and saves the model |
+| `transaction_producer.py` | Generates transaction events and publishes them to Kafka |
+| `spark_consumer.py` | Reads Kafka events with Spark, performs model inference, and persists flagged records |
+| Apache Kafka | Acts as the distributed event broker |
+| Spark Structured Streaming | Processes incoming events in micro-batches |
+| Isolation Forest | Identifies records that differ from learned transaction patterns |
+| CSV output | Stores flagged transaction records for inspection |
 
-## 2. Technology Stack
+## 3. Technology Stack
 
-| Technology | Version | Purpose |
-| :--- | :--- | :--- |
-| **Python** | 3.11.x | Core programming language |
-| **Apache Kafka** | 3.7.0 (KRaft) | Distributed event streaming broker |
-| **Apache Spark / PySpark** | 3.5.1 | Distributed real-time stream processing |
-| **Kafka Spark Connector** | `spark-sql-kafka-0-10_2.12:3.5.1` | Native Spark-to-Kafka streaming integration |
-| **Java JDK** | OpenJDK 21 LTS | Runtime environment for Spark & JVM |
-| **scikit-learn** | >= 1.4.0 | Isolation Forest anomaly detection algorithm |
-| **pandas & NumPy** | Modern LTS | Numerical operations and CSV persistence |
-| **joblib** | >= 1.3.0 | ML model serialization and loading |
-| **Docker Compose** | v2.x / v5.x | Containerized local Kafka deployment |
+- **Python 3.11.6** – application and producer code
+- **Apache Kafka 3.7.0** – transaction event streaming
+- **Docker Desktop / Docker Compose** – runs the Kafka broker
+- **Apache Spark 3.5.1** – structured stream processing
+- **PySpark** – Python API for Spark
+- **Scikit-learn** – Isolation Forest anomaly-detection model
+- **Pandas and NumPy** – data preparation
+- **Joblib** – model serialization
+- **Pytest** – automated tests
 
----
+The Spark Kafka connector used by the application is:
 
-## 3. Project Directory Structure
+`org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1`
+
+## 4. Project Structure
+
+The repository is expected to have the following layout:
 
 ```text
 Realtime-fraud-detection/
-├── docker-compose.yml             # Single-node Kafka KRaft container definition
-├── requirements.txt               # Pinned Python dependencies
-├── README.md                      # Architecture documentation and reproduction runbook
-├── .gitignore                     # Git ignore rules for checkpoints, models, data, and cache
-├── train_model.py                 # Generates synthetic data, trains & serializes Isolation Forest
-├── transaction_producer.py        # Real-time event generator publishing to Kafka
-├── spark_consumer.py              # PySpark Structured Streaming consumer & ML evaluator
+│
+├── data/
+│   └── synthetic_transactions.csv
+│
+├── models/
+│   └── fraud_detection_pipeline.joblib
+│
+├── output/
+│   └── flagged_transactions.csv
+│
+├── checkpoints/
+│   └── (Spark streaming checkpoint files)
+│
 ├── tests/
-│   └── test_pipeline.py           # Unit and integration test suite
-├── models/                        # Serialized model bundle (.joblib)
-├── data/                          # Training dataset (.csv)
-├── output/                        # Flagged suspicious transactions (.csv)
-└── checkpoints/                   # Spark Structured Streaming state checkpoints
+│   └── test_pipeline.py
+│
+├── docs/
+│   └── screenshots/
+│       ├── 01_kafka_docker.png
+│       ├── 02_producer.png
+│       ├── 03_spark.png
+│       └── 04_pytest.png
+│
+├── docker-compose.yml
+├── requirements.txt
+├── train_model.py
+├── transaction_producer.py
+├── spark_consumer.py
+├── README.md
+└── .gitignore
 ```
 
----
+Generated files such as virtual environments, Spark checkpoints, caches, and large temporary logs should generally not be committed. The model and sample dataset may be committed only if their size and repository policy permit it.
 
-## 4. Machine-Learning Model Details
+## 5. How the Detection Works
 
-### Features
-The Isolation Forest model trains on five canonical features:
-1. `amount` *(float)*: Monetary value of the transaction in USD.
-2. `transaction_hour` *(int, 0–23)*: Hour of the day the transaction occurred.
-3. `distance_from_home_km` *(float)*: Distance in kilometers between the cardholder billing address and the transaction merchant location.
-4. `transaction_frequency_1h` *(int)*: Number of transactions conducted by this account within the last 60 minutes.
-5. `merchant_risk_score` *(float, 0.0–1.0)*: Historical risk assessment score associated with the merchant.
+### 5.1 Transaction features
 
-### Transformation & Model Architecture
-- **Standardization**: Features are scaled using `StandardScaler` to ensure features with differing magnitudes (e.g. `amount` vs `merchant_risk_score`) contribute proportionally to tree splits.
-- **Algorithm**: `IsolationForest(n_estimators=150, contamination=0.04, random_state=42)`.
-- **Inference Metric**: The model's `decision_function` produces continuous outlier scores. Negative values represent anomalies, while lower scores denote more extreme deviations.
-- **Distinction between Anomaly vs Fraud**: Anomaly detection identifies *unusual statistical patterns* (e.g. an unexpected large purchase or international travel). In real-world banking, an anomaly triggers step-up authentication or a hold, but is not confirmed fraud until verified through cardholder confirmation or dispute resolution.
+The model uses these five features:
 
-> **Data Limitation Note**: The training and demonstration datasets use synthetic distributions designed to replicate genuine banking transaction behavior. Metrics reported on synthetic data serve as baseline sanity checks and do not represent production performance on real-world bank data.
+| Feature | Description |
+|---|---|
+| `amount` | Transaction amount |
+| `transaction_hour` | Hour at which the transaction occurs |
+| `distance_from_home_km` | Distance from the customer's usual/home location |
+| `transaction_frequency_1h` | Number of transactions in the previous hour |
+| `merchant_risk_score` | Synthetic risk score associated with the merchant |
 
----
+The producer creates synthetic values for these fields and serializes each event as JSON before publishing it to Kafka.
 
-## 5. Prerequisites & Environment Setup
+### 5.2 Isolation Forest
 
-### 1. Prerequisites
-- **Windows 10/11** with PowerShell.
-- **Python 3.11** installed.
-- **Java OpenJDK 21 LTS** or **Java 17 / 11**.
-- **Docker Desktop** installed and running (for Apache Kafka).
+Isolation Forest is an unsupervised anomaly-detection algorithm. It isolates observations by randomly selecting features and split values. Records that are easier to isolate from the rest of the data receive stronger anomaly indications.
 
-### 2. Virtual Environment Setup
-Open Windows PowerShell in the project root:
+In this project:
+
+- The model is trained in advance by `train_model.py`.
+- The trained preprocessing/model pipeline is saved with Joblib.
+- The Spark consumer loads the saved model and applies it to incoming transaction records.
+- Predictions are used to identify records that should be reviewed.
+
+### 5.3 Risk labels
+
+The application output uses labels such as:
+
+- `NORMAL` – the model did not flag the transaction as anomalous.
+- `SUSPICIOUS` – a risk label used by the application's scoring/classification logic.
+- `HIGH_RISK` – a higher-risk label used by the application's scoring/classification logic.
+
+These labels are application-level indicators. They should not be interpreted as a confirmed fraud verdict.
+
+## 6. Prerequisites
+
+Install or prepare the following before running the project:
+
+1. **Windows 10/11** (the documented commands use PowerShell).
+2. **Python 3.11.x**.
+3. **Java 21** (or a Java version supported by the installed Spark distribution).
+4. **Docker Desktop**, started and running.
+5. **Git**.
+6. Internet access for installing Python packages and downloading the Spark Kafka connector when Spark starts.
+
+Check the installations:
 
 ```powershell
-# Create Python 3.11 virtual environment
+python --version
+java -version
+docker --version
+docker compose version
+git --version
+```
+
+The project was verified in a Windows environment with Python 3.11.6, Java 21, Kafka 3.7.0 and Spark 3.5.1.
+
+## 7. Installation and Setup
+
+### Step 1: Clone the repository
+
+Open PowerShell and run:
+
+```powershell
+git clone https://github.com/YOUR_GITHUB_USERNAME/Realtime-fraud-detection.git
+cd Realtime-fraud-detection
+```
+
+Replace `YOUR_GITHUB_USERNAME` with the GitHub account that owns the repository.
+
+### Step 2: Create a virtual environment
+
+```powershell
 py -3.11 -m venv .venv
+```
 
-# Activate the virtual environment
+Activate it:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
+```
 
-# Upgrade pip and install required dependencies
+If PowerShell blocks activation for the current session, run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+You can also run the environment's Python directly without activating it:
+
+```powershell
+.\.venv\Scripts\python.exe --version
+```
+
+### Step 3: Install Python dependencies
+
+```powershell
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
----
+### Step 4: Configure Java and Hadoop environment (Windows)
 
-## 6. Execution Runbook (Step-by-Step)
-
-Follow these exact steps in order.
-
-### Step 1: Start Apache Kafka via Docker Compose
-In a PowerShell terminal:
+If Spark on your Windows setup requires explicit Java/Hadoop paths, configure them in the current PowerShell session. Update the paths to match your computer:
 
 ```powershell
-# Start single-node Kafka broker in KRaft mode
-docker compose up -d
-
-# Verify container status
-docker ps
-```
-
-Verify that the `fraud-detection-kafka` container is healthy and listening on port `9092`.
-
-*(Optional)* Create or verify the Kafka topic:
-```powershell
-docker exec -i fraud-detection-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions --partitions 2 --replication-factor 1
-```
-
-### Step 2: Train the Anomaly Detection Model
-Generate the synthetic training set, fit the Isolation Forest model, evaluate baseline metrics, and serialize the pipeline:
-
-```powershell
-.\.venv\Scripts\python.exe train_model.py --samples 15000 --contamination 0.04
-```
-
-Expected output:
-- Generates `data/synthetic_transactions.csv` (15,000 records).
-- Evaluates confusion matrix and ROC-AUC score.
-- Saves model bundle to `models/fraud_detection_pipeline.joblib`.
-
-### Step 3: Run the Test Suite
-Verify that all components, feature mappings, and serializers function properly:
-
-```powershell
-.\.venv\Scripts\pytest -v tests/test_pipeline.py
-```
-
-### Step 4: Start the Spark Structured Streaming Consumer
-Open a **new PowerShell terminal** (Terminal 1):
-
-```powershell
-.\.venv\Scripts\Activate.ps1
 $env:JAVA_HOME = "C:\Program Files\Android\openjdk\jdk-21.0.8"
-.\.venv\Scripts\python.exe spark_consumer.py --trigger-interval "2 seconds"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+$env:HADOOP_HOME = "C:\hadoop"
+$env:PATH = "$env:HADOOP_HOME\bin;$env:PATH"
 ```
 
-The consumer will:
-- Download the Spark-Kafka connector (cached on subsequent runs).
-- Load `models/fraud_detection_pipeline.joblib`.
-- Subscribe to Kafka topic `transactions`.
-- Display a waiting banner for incoming transactions.
-
-### Step 5: Start the Live Transaction Producer
-Open a **second PowerShell terminal** (Terminal 2):
+Confirm Java is available:
 
 ```powershell
+java -version
+```
+
+`JAVA_HOME` and `HADOOP_HOME` are machine-specific. Do not copy these example paths blindly if your installations are in different folders.
+
+### Step 5: Train the model
+
+Run this once to generate the synthetic training data and save the model:
+
+```powershell
+python train_model.py
+```
+
+Expected generated artifacts include:
+
+```text
+data/synthetic_transactions.csv
+models/fraud_detection_pipeline.joblib
+```
+
+If the repository already includes a compatible trained model and sample data, you can use those artifacts instead of retraining.
+
+## 8. Run the Project
+
+Run the system using **three PowerShell terminals**. Keep Docker running while the producer and Spark consumer are active.
+
+### Terminal 1: Start Kafka with Docker Compose
+
+From the project root:
+
+```powershell
+docker compose up -d
+```
+
+Check the container:
+
+```powershell
+docker compose ps
+```
+
+The Kafka container should show a running/healthy status.
+
+Check that Kafka's local port is reachable:
+
+```powershell
+Test-NetConnection localhost -Port 9092
+```
+
+Look for:
+
+```text
+TcpTestSucceeded : True
+```
+
+If the Kafka container is not running, inspect its logs:
+
+```powershell
+docker compose logs -f
+```
+
+### Terminal 2: Start the Spark streaming consumer
+
+Open a second PowerShell window, navigate to the project folder, activate the virtual environment, and configure Java/Hadoop variables if required.
+
+Run:
+
+```powershell
+cd path\to\Realtime-fraud-detection
 .\.venv\Scripts\Activate.ps1
-.\.venv\Scripts\python.exe transaction_producer.py --interval 1.0 --anomaly-rate 0.18
+python spark_consumer.py
 ```
 
-You will observe:
-- Events continuously published to Kafka topic `transactions`.
-- Terminal 1 (Spark consumer) rendering micro-batch tables with real-time predictions (`NORMAL`, `? SUSPICIOUS`, `! HIGH_RISK !`).
-- Flagged suspicious transactions automatically recorded in `output/flagged_transactions.csv`.
+The consumer should initialize Spark, load the saved model, connect to Kafka, subscribe to the `transactions` topic, and wait for events.
 
-*(Optional)* To run a finite demonstration of 25 transactions and stop automatically:
+**Start the consumer before the producer** so that you can watch the incoming events being processed.
+
+### Terminal 3: Start the transaction producer
+
+Open a third PowerShell window and navigate to the project root:
+
 ```powershell
-.\.venv\Scripts\python.exe transaction_producer.py --interval 0.5 --max-events 25 --anomaly-rate 0.25
+cd path\to\Realtime-fraud-detection
+.\.venv\Scripts\Activate.ps1
 ```
 
----
+Start a finite demo of 20 transactions:
 
-## 7. Inspecting Kafka and Results
-
-### Inspect Kafka Messages Directly
-To verify that raw JSON messages are genuinely flowing through Kafka:
 ```powershell
-docker exec -i fraud-detection-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic transactions --from-beginning --max-messages 5
+python transaction_producer.py --interval 0.5 --max-events 20 --anomaly-rate 0.30
 ```
 
-### Inspect Flagged Output CSV
+Parameter meanings:
+
+| Parameter | Meaning |
+|---|---|
+| `--interval 0.5` | Wait approximately 0.5 seconds between generated events |
+| `--max-events 20` | Stop after publishing 20 events |
+| `--anomaly-rate 0.30` | Configure the producer to generate a 30% synthetic anomaly rate |
+
+The exact command-line options are defined by the producer script. Use `python transaction_producer.py --help` if you want to inspect the options supported by your local version.
+
+### Optional: Run the producer continuously
+
+If the producer supports running without a maximum event count, use:
+
+```powershell
+python transaction_producer.py --interval 1 --anomaly-rate 0.20
+```
+
+Stop the producer or consumer with **Ctrl + C** when finished.
+
+## 9. View the Results
+
+### 9.1 Spark terminal
+
+The Spark consumer terminal displays processed micro-batches, prediction results, and counts of flagged transactions.
+
+### 9.2 CSV output
+
+Open this file to inspect saved flagged records:
+
+```text
+output/flagged_transactions.csv
+```
+
 In PowerShell:
+
 ```powershell
-Get-Content output\flagged_transactions.csv | Select-Object -First 10
+Get-Content .\output\flagged_transactions.csv
 ```
 
+To open it in Excel:
+
+```powershell
+Invoke-Item .\output\flagged_transactions.csv
+```
+
+The output includes transaction details and prediction-related fields produced by the application, such as anomaly indicator, risk label, anomaly score, and evaluation time.
+
+### 9.3 Kafka topic messages (optional)
+
+To inspect messages directly from Kafka, run:
+
+```powershell
+docker exec -it fraud-detection-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic transactions --from-beginning
+```
+
+Stop the console consumer with **Ctrl + C**.
+
+### 9.4 Docker Desktop
+
+Open Docker Desktop → **Containers**. The `fraud-detection-kafka` container represents the Kafka broker.
+
+The producer, Spark consumer, and model inference run as local Python processes in this implementation. They are not separate Docker containers.
+
+## 10. Run Automated Tests
+
+From the project root, with the virtual environment active:
+
+```powershell
+python -m pytest -v tests/test_pipeline.py
+```
+
+Or run using the virtual environment directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v tests/test_pipeline.py
+```
+
+The verified test run reported:
+
+```text
+====================== 6 passed in 6.61s ======================
+```
+
+The test suite covers feature consistency, transaction generation and JSON serialization, model training and serialization, prediction generation, output persistence, and Kafka connectivity when available.
+
+## 11. Example Execution Results
+
+The documented end-to-end verification run produced the following results:
+
+| Verification item | Observed result |
+|---|---:|
+| Kafka broker | Started and healthy |
+| Kafka port | `9092` reachable |
+| Transactions published | 20 |
+| Transactions processed by Spark | 20 |
+| Spark micro-batches | 4 |
+| Transactions flagged as anomalies | 9 |
+| Flagged percentage in this run | 45.0% |
+| Automated tests | 6 passed |
+
+The 45% flagged result is specific to this generated demonstration run. It is not a measured real-world fraud rate and should not be used as a model-performance claim.
+
+### Execution evidence
+
+**1. Kafka running in Docker**
+
+![Kafka Docker status](docs/screenshots/01_kafka_docker.png)
+
+**2. Producer publishing transaction events**
+
+![Transaction producer output](docs/screenshots/02_producer.png)
+
+**3. Spark processing and anomaly detection**
+
+![Spark streaming output](docs/screenshots/03_spark.png)
+
+**4. Automated tests**
+
+![Pytest output](docs/screenshots/04_pytest.png)
+
+> Evidence note: The images currently included in this documentation package are formatted terminal evidence panels reconstructed from the verified execution output available during report preparation. Replace them with original, unedited desktop screenshots from your own terminals before presenting them as raw screenshots.
+
+## 12. Configuration
+
+The main settings are controlled by the project scripts and Docker Compose file.
+
+| Setting | Current documented value |
+|---|---|
+| Kafka bootstrap server | `localhost:9092` |
+| Kafka topic | `transactions` |
+| Kafka version | `3.7.0` |
+| Spark version | `3.5.1` |
+| Streaming trigger | 2 seconds |
+| Model | Isolation Forest |
+| Model file | `models/fraud_detection_pipeline.joblib` |
+| Output file | `output/flagged_transactions.csv` |
+
+If you change the Kafka address, topic, model path, or output path in the code, make sure the producer and consumer use matching configuration.
+
+## 13. Troubleshooting
+
+### Problem: Producer cannot connect to Kafka
+
+**Possible message:**
+
+```text
+Failed to connect to Kafka at localhost:9092
+```
+
+**Try:**
+
+```powershell
+docker compose up -d
+docker compose ps
+Test-NetConnection localhost -Port 9092
+```
+
+Wait until the Kafka container is healthy before starting the producer.
+
+### Problem: Spark cannot connect to Kafka
+
+1. Confirm Kafka is running.
+2. Confirm `localhost:9092` is reachable.
+3. Check that the Spark consumer is using the same topic name: `transactions`.
+4. Restart the consumer after Kafka is available.
+
+### Problem: Model file not found
+
+Run:
+
+```powershell
+python train_model.py
+```
+
+Confirm that this file exists:
+
+```text
+models/fraud_detection_pipeline.joblib
+```
+
+### Problem: Spark/Java startup errors on Windows
+
+Check:
+
+```powershell
+java -version
+echo $env:JAVA_HOME
+echo $env:HADOOP_HOME
+```
+
+Correct the environment paths for your local Java and Hadoop installations.
+
+### Problem: PowerShell cannot activate the virtual environment
+
+Run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+### Stop Kafka
+
+When the demonstration is complete:
+
+```powershell
+docker compose down
+```
+
+This stops and removes the Compose containers. It does not delete your project source files.
+
+## 14. Limitations and Responsible Use
+
+- The transaction dataset is synthetic and is not a real bank transaction dataset.
+- The model's anomaly predictions are not proof that a transaction is fraudulent.
+- Synthetic test performance does not establish real-world accuracy, precision, recall, or financial risk reduction.
+- Production use would require representative, legally obtained data, careful validation, monitoring, privacy controls, security review, and human investigation workflows.
+- The current implementation runs Kafka in Docker while the producer and Spark consumer run locally. It is not a fully containerized deployment.
+
+## 15. Future Improvements
+
+- Add a dashboard for live transaction and anomaly monitoring.
+- Evaluate the model on a suitable real-world or properly governed benchmark dataset.
+- Add precision, recall, F1-score, ROC-AUC, and confusion-matrix reporting on a valid labelled test set.
+- Add schema validation and dead-letter handling for malformed events.
+- Containerize the producer and Spark consumer for reproducible deployment.
+- Add structured logging, metrics, and alerting.
+- Add secure configuration for credentials and deployment environments.
+
+## 16. Author
+
+**Srushti Nawghane**
+
+Academic project: Real-Time AI Streaming – Fraud Detection
+
 ---
 
-## 8. Troubleshooting
-
-| Symptom | Cause | Solution |
-| :--- | :--- | :--- |
-| `java.lang.IllegalArgumentException: Unsupported class file major version` | PySpark ran with Java 26+ | Set `$env:JAVA_HOME = "C:\Program Files\Android\openjdk\jdk-21.0.8"` before launching Spark. |
-| `NoBrokersAvailable` in producer | Kafka container not ready | Wait 10-15 seconds for Kafka container to pass health checks, or restart with `docker compose restart`. |
-| `Failed to load model file` | Model not trained yet | Run `python train_model.py` first to create `models/fraud_detection_pipeline.joblib`. |
-| Spark Kafka download timeout | Slow Maven mirror | Pre-download packages or allow Spark 1–2 minutes on first run to populate local Ivy cache. |
-| Checkpoint lock conflict | Previous interrupted run | Delete `checkpoints/spark_fraud_stream` or start with a fresh checkpoint folder. |
-
----
-
-## 9. Future Enhancements
-1. **Supervised & Hybrid Models**: Integrate XGBoost or LightGBM alongside Isolation Forest when labeled fraud datasets (e.g. Kaggle Credit Card Fraud dataset) are available.
-2. **Stateful Stream Processing**: Use Spark's `mapGroupsWithState` to compute rolling 24-hour sliding window aggregations (e.g. cumulative customer spend in past 10 minutes).
-3. **Web Dashboard**: Connect output to Grafana or a Streamlit UI for executive-level fraud monitoring and alert resolution workflows.
-
+If you find this project useful for learning about streaming systems and anomaly detection, feel free to explore the code, run the demo, and suggest improvements.
