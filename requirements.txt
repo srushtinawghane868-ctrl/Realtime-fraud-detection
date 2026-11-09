@@ -1,0 +1,11 @@
+# Real-Time Fraud Detection Requirements
+# Python 3.11 Compatible
+
+pyspark==3.5.1
+kafka-python-ng==2.2.2
+scikit-learn>=1.4.0
+pandas>=2.2.0
+numpy>=1.26.0
+joblib>=1.3.0
+pytest>=8.0.0
+

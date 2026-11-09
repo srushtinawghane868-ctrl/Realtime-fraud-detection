@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# Spark & Kafka checkpoints and temporary files
+checkpoints/
+metastore_db/
+derby.log
+.sparkStaging/
+
+# Output and generated data
+output/*.csv
+!output/.gitkeep
+data/*.csv
+!data/.gitkeep
+
+# Models
+models/*.joblib
+!models/.gitkeep
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test reports / cache
+.pytest_cache/
+.coverage
+htmlcov/
+
